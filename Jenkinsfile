@@ -41,7 +41,9 @@ pipeline {
         stage('push latest') {
             parallel {
                 stage('maybe push latest_amd64 tag') {
-                    agent any
+                    agent {
+                        label 'amd64'
+                    }
                     environment {
                         ARCH="amd64"
                     }
