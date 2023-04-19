@@ -7,22 +7,17 @@ import (
 
 	"github.com/0xPolygonHermez/zkevm-node/log"
 	"github.com/0xPolygonHermez/zkevm-node/pool"
-	"github.com/0xPolygonHermez/zkevm-node/pool/pgpoolstorage"
 	"github.com/0xPolygonHermez/zkevm-node/state"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/jackc/pgx/v4"
 )
 
-const (
-	wait time.Duration = 5
-)
-
 // Pool Loader and DB Updater
 type dbManager struct {
 	cfg              DBManagerCfg
 	txPool           txPool
-	state            dbManagerStateInterface
+	state            stateInterface
 	worker           workerInterface
 	txsStore         TxsStore
 	l2ReorgCh        chan L2ReorgEvent
@@ -44,7 +39,7 @@ type ClosingBatchParameters struct {
 	Txs           []types.Transaction
 }
 
-func newDBManager(ctx context.Context, config DBManagerCfg, txPool txPool, state dbManagerStateInterface, worker *Worker, closingSignalCh ClosingSignalCh, txsStore TxsStore, batchConstraints batchConstraints) *dbManager {
+func newDBManager(ctx context.Context, config DBManagerCfg, txPool txPool, state stateInterface, worker *Worker, closingSignalCh ClosingSignalCh, txsStore TxsStore, batchConstraints batchConstraints) *dbManager {
 	numberOfReorgs, err := state.CountReorgs(ctx, nil)
 	if err != nil {
 		log.Error("failed to get number of reorgs: %v", err)
@@ -58,8 +53,7 @@ func (d *dbManager) Start() {
 	go d.loadFromPool()
 	go func() {
 		for {
-			// TODO: Move this to a config parameter
-			time.Sleep(wait * time.Second)
+			time.Sleep(d.cfg.L2ReorgRetrievalInterval.Duration)
 			d.checkIfReorg()
 		}
 	}()
@@ -126,7 +120,7 @@ func (d *dbManager) loadFromPool() {
 		time.Sleep(d.cfg.PoolRetrievalInterval.Duration)
 
 		poolTransactions, err := d.txPool.GetNonWIPPendingTxs(d.ctx, false, 0)
-		if err != nil && err != pgpoolstorage.ErrNotFound {
+		if err != nil && err != pool.ErrNotFound {
 			log.Errorf("load tx from pool: %v", err)
 		}
 
@@ -138,7 +132,7 @@ func (d *dbManager) loadFromPool() {
 		}
 
 		poolClaims, err := d.txPool.GetNonWIPPendingTxs(d.ctx, true, 0)
-		if err != nil && err != pgpoolstorage.ErrNotFound {
+		if err != nil && err != pool.ErrNotFound {
 			log.Errorf("load claims from pool: %v", err)
 		}
 
@@ -156,8 +150,17 @@ func (d *dbManager) addTxToWorker(tx pool.Transaction, isClaim bool) error {
 	if err != nil {
 		return err
 	}
-	d.worker.AddTxTracker(d.ctx, txTracker)
-	return d.txPool.UpdateTxWIPStatus(d.ctx, tx.Hash(), true)
+	dropReason, isWIP := d.worker.AddTxTracker(d.ctx, txTracker)
+	if dropReason != nil {
+		failedReason := dropReason.Error()
+		return d.txPool.UpdateTxStatus(d.ctx, txTracker.Hash, pool.TxStatusFailed, false, &failedReason)
+	} else {
+		if isWIP {
+			return d.txPool.UpdateTxWIPStatus(d.ctx, tx.Hash(), true)
+		}
+	}
+
+	return nil
 }
 
 // BeginStateTransaction starts a db transaction in the state
@@ -177,7 +180,6 @@ func (d *dbManager) DeleteTransactionFromPool(ctx context.Context, txHash common
 
 // storeProcessedTxAndDeleteFromPool stores a tx into the state and changes it status in the pool
 func (d *dbManager) storeProcessedTxAndDeleteFromPool() {
-	// TODO: Finish the retry mechanism and error handling
 	for {
 		txToStore := <-d.txsStore.Ch
 		d.checkIfReorg()
@@ -222,7 +224,7 @@ func (d *dbManager) storeProcessedTxAndDeleteFromPool() {
 		}
 
 		// Change Tx status to selected
-		err = d.txPool.UpdateTxStatus(d.ctx, txToStore.txResponse.TxHash, pool.TxStatusSelected, false)
+		err = d.txPool.UpdateTxStatus(d.ctx, txToStore.txResponse.TxHash, pool.TxStatusSelected, false, nil)
 		if err != nil {
 			log.Fatalf("StoreProcessedTxAndDeleteFromPool: %v", err)
 		}
@@ -273,7 +275,7 @@ func (d *dbManager) GetWIPBatch(ctx context.Context) (*WipBatch, error) {
 		batchNumber:    lastBatch.BatchNumber,
 		coinbase:       lastBatch.Coinbase,
 		localExitRoot:  lastBatch.LocalExitRoot,
-		timestamp:      uint64(lastBatch.Timestamp.Unix()),
+		timestamp:      lastBatch.Timestamp,
 		globalExitRoot: lastBatch.GlobalExitRoot,
 		countOfTxs:     len(lastBatch.Transactions),
 	}
@@ -304,7 +306,7 @@ func (d *dbManager) GetWIPBatch(ctx context.Context) (*WipBatch, error) {
 		processingContext := &state.ProcessingContext{
 			BatchNumber:    wipBatch.batchNumber,
 			Coinbase:       wipBatch.coinbase,
-			Timestamp:      time.Unix(int64(wipBatch.timestamp), 0),
+			Timestamp:      wipBatch.timestamp,
 			GlobalExitRoot: wipBatch.globalExitRoot,
 		}
 		err = d.state.OpenBatch(ctx, *processingContext, dbTx)
@@ -436,7 +438,7 @@ func (d *dbManager) ProcessForcedBatch(forcedBatchNum uint64, request state.Proc
 	processingCtx := state.ProcessingContext{
 		BatchNumber:    request.BatchNumber,
 		Coinbase:       request.Coinbase,
-		Timestamp:      time.Unix(int64(request.Timestamp), 0),
+		Timestamp:      request.Timestamp,
 		GlobalExitRoot: request.GlobalExitRoot,
 		ForcedBatchNum: &forcedBatchNum,
 	}
@@ -533,8 +535,8 @@ func (d *dbManager) GetTransactionsByBatchNumber(ctx context.Context, batchNumbe
 	return d.state.GetTransactionsByBatchNumber(ctx, batchNumber, nil)
 }
 
-func (d *dbManager) UpdateTxStatus(ctx context.Context, hash common.Hash, newStatus pool.TxStatus, isWIP bool) error {
-	return d.txPool.UpdateTxStatus(ctx, hash, newStatus, isWIP)
+func (d *dbManager) UpdateTxStatus(ctx context.Context, hash common.Hash, newStatus pool.TxStatus, isWIP bool, failedReason *string) error {
+	return d.txPool.UpdateTxStatus(ctx, hash, newStatus, isWIP, failedReason)
 }
 
 // GetLatestVirtualBatchTimestamp gets last virtual batch timestamp
@@ -550,14 +552,4 @@ func (d *dbManager) CountReorgs(ctx context.Context, dbTx pgx.Tx) (uint64, error
 // FlushMerkleTree persists updates in the Merkle tree
 func (d *dbManager) FlushMerkleTree(ctx context.Context) error {
 	return d.state.FlushMerkleTree(ctx)
-}
-
-// AddDebugInfo is used to store debug info useful during runtime
-func (d *dbManager) AddDebugInfo(ctx context.Context, info *state.DebugInfo, dbTx pgx.Tx) error {
-	return d.state.AddDebugInfo(ctx, info, dbTx)
-}
-
-// AddEvent is used to store and event in the database
-func (d *dbManager) AddEvent(ctx context.Context, event *state.Event, dbTx pgx.Tx) error {
-	return d.state.AddEvent(ctx, event, dbTx)
 }

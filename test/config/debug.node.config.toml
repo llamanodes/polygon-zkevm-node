@@ -16,6 +16,7 @@ MaxConns = 10
 
 [Pool]
 FreeClaimGasLimit = 1500000
+IntervalToRefreshBlockedAddresses = "5m"
 MaxTxBytesSize=30132
 MaxTxDataBytesSize=30000
 DefaultMinGasPriceAllowed = 1000000000
@@ -47,7 +48,6 @@ ReadTimeoutInSec = 60
 WriteTimeoutInSec = 60
 MaxRequestsPerIPAndSecond = 10000
 SequencerNodeURI = ""
-BroadcastURI = "127.0.0.1:61090"
 DefaultSenderAddress = "0x1111111111111111111111111111111111111111"
 EnableL2SuggestedGasPricePolling = true
 	[RPC.WebSockets]
@@ -57,7 +57,8 @@ EnableL2SuggestedGasPricePolling = true
 [Synchronizer]
 SyncInterval = "5s"
 SyncChunkSize = 100
-GenBlockNumber = 79
+GenBlockNumber = 74
+TrustedSequencerURL = ""
 
 [Sequencer]
 WaitPeriodPoolIsEmpty = "1s"
@@ -90,7 +91,6 @@ MaxTxSizeForL1 = 131072
 	[Sequencer.Finalizer]
 		GERDeadlineTimeoutInSec = "1s"
 		ForcedBatchDeadlineTimeoutInSec = "60s"
-		SendingToL1DeadlineTimeoutInSec = "20s"
 		SleepDurationInMs = "100ms"
 		ResourcePercentageToCloseBatch = 10
 		GERFinalityNumberOfBlocks = 0
@@ -98,10 +98,14 @@ MaxTxSizeForL1 = 131072
 		ClosingSignalsManagerWaitForCheckingGER = "10s"
 		ClosingSignalsManagerWaitForCheckingForcedBatches = "10s"
 		ForcedBatchesFinalityNumberOfBlocks = 0
+		TimestampResolution = "15s"
 		SenderAddress = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
 		PrivateKeys = [{Path = "./test/sequencer.keystore", Password = "testonly"}]
 	[Sequencer.DBManager]
 		PoolRetrievalInterval = "500ms"
+		L2ReorgRetrievalInterval = "5s"
+	[Sequencer.Worker]
+		ResourceCostMultiplier = 1000
 
 [Aggregator]
 Host = "0.0.0.0"
@@ -133,10 +137,6 @@ URI = "127.0.0.1:50061"
 [Executor]
 URI = "127.0.0.1:50071"
 
-[BroadcastServer]
-Host = "0.0.0.0"
-Port = 61090
-
 [Metrics]
 Host = "0.0.0.0"
 Port = 9091
@@ -144,3 +144,13 @@ Enabled = false
 ProfilingHost = "0.0.0.0"
 ProfilingPort = 6060
 ProfilingEnabled = false
+
+[EventLog]
+	[EventLog.DB]
+	User = "event_user"
+	Password = "event_password"
+	Name = "event_db"
+	Host = "zkevm-event-db"
+	Port = "5432"
+	EnableLog = false
+	MaxConns = 200

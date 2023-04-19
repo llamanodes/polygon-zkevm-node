@@ -23,8 +23,8 @@ type storage interface {
 	GetNonWIPTxsByStatus(ctx context.Context, status TxStatus, isClaims bool, limit uint64) ([]Transaction, error)
 	IsTxPending(ctx context.Context, hash common.Hash) (bool, error)
 	SetGasPrice(ctx context.Context, gasPrice uint64) error
-	UpdateTxsStatus(ctx context.Context, hashes []string, newStatus TxStatus) error
-	UpdateTxStatus(ctx context.Context, hash common.Hash, newStatus TxStatus, isWIP bool) error
+	UpdateTxsStatus(ctx context.Context, updateInfo []TxStatusUpdateInfo) error
+	UpdateTxStatus(ctx context.Context, updateInfo TxStatusUpdateInfo) error
 	UpdateTxWIPStatus(ctx context.Context, hash common.Hash, isWIP bool) error
 	GetTxs(ctx context.Context, filterStatus TxStatus, isClaims bool, minGasPrice, limit uint64) ([]*Transaction, error)
 	GetTxFromAddressFromByHash(ctx context.Context, hash common.Hash) (common.Address, uint64, error)
@@ -32,14 +32,15 @@ type storage interface {
 	GetTxZkCountersByHash(ctx context.Context, hash common.Hash) (*state.ZKCounters, error)
 	DeleteTransactionByHash(ctx context.Context, hash common.Hash) error
 	MarkWIPTxsAsPending(ctx context.Context) error
+	GetAllAddressesBlocked(ctx context.Context) ([]common.Address, error)
 	MinGasPriceSince(ctx context.Context, timestamp time.Time) (uint64, error)
+	DepositCountExists(ctx context.Context, depositCount uint64) (bool, error)
 }
 
 type stateInterface interface {
-	GetBalance(ctx context.Context, address common.Address, batchNumber uint64, dbTx pgx.Tx) (*big.Int, error)
-	GetLastL2BlockNumber(ctx context.Context, dbTx pgx.Tx) (uint64, error)
-	GetNonce(ctx context.Context, address common.Address, batchNumber uint64, dbTx pgx.Tx) (uint64, error)
+	GetBalance(ctx context.Context, address common.Address, root common.Hash) (*big.Int, error)
+	GetLastL2Block(ctx context.Context, dbTx pgx.Tx) (*types.Block, error)
+	GetNonce(ctx context.Context, address common.Address, root common.Hash) (uint64, error)
 	GetTransactionByHash(ctx context.Context, transactionHash common.Hash, dbTx pgx.Tx) (*types.Transaction, error)
 	PreProcessTransaction(ctx context.Context, tx *types.Transaction, dbTx pgx.Tx) (*state.ProcessBatchResponse, error)
-	AddEvent(ctx context.Context, event *state.Event, dbTx pgx.Tx) error
 }

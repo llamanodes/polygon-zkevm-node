@@ -26,34 +26,6 @@ type DbManagerMock struct {
 	mock.Mock
 }
 
-// AddDebugInfo provides a mock function with given fields: ctx, info, dbTx
-func (_m *DbManagerMock) AddDebugInfo(ctx context.Context, info *state.DebugInfo, dbTx pgx.Tx) error {
-	ret := _m.Called(ctx, info, dbTx)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, *state.DebugInfo, pgx.Tx) error); ok {
-		r0 = rf(ctx, info, dbTx)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// AddEvent provides a mock function with given fields: ctx, event, dbTx
-func (_m *DbManagerMock) AddEvent(ctx context.Context, event *state.Event, dbTx pgx.Tx) error {
-	ret := _m.Called(ctx, event, dbTx)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, *state.Event, pgx.Tx) error); ok {
-		r0 = rf(ctx, event, dbTx)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // BeginStateTransaction provides a mock function with given fields: ctx
 func (_m *DbManagerMock) BeginStateTransaction(ctx context.Context) (pgx.Tx, error) {
 	ret := _m.Called(ctx)
@@ -601,13 +573,13 @@ func (_m *DbManagerMock) StoreProcessedTransaction(ctx context.Context, batchNum
 	return r0
 }
 
-// UpdateTxStatus provides a mock function with given fields: ctx, hash, newStatus, isWIP
-func (_m *DbManagerMock) UpdateTxStatus(ctx context.Context, hash common.Hash, newStatus pool.TxStatus, isWIP bool) error {
-	ret := _m.Called(ctx, hash, newStatus, isWIP)
+// UpdateTxStatus provides a mock function with given fields: ctx, hash, newStatus, isWIP, reason
+func (_m *DbManagerMock) UpdateTxStatus(ctx context.Context, hash common.Hash, newStatus pool.TxStatus, isWIP bool, reason *string) error {
+	ret := _m.Called(ctx, hash, newStatus, isWIP, reason)
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, common.Hash, pool.TxStatus, bool) error); ok {
-		r0 = rf(ctx, hash, newStatus, isWIP)
+	if rf, ok := ret.Get(0).(func(context.Context, common.Hash, pool.TxStatus, bool, *string) error); ok {
+		r0 = rf(ctx, hash, newStatus, isWIP, reason)
 	} else {
 		r0 = ret.Error(0)
 	}

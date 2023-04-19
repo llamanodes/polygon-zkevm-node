@@ -9,6 +9,8 @@ import (
 
 	"github.com/0xPolygonHermez/zkevm-node/config/types"
 	"github.com/0xPolygonHermez/zkevm-node/db"
+	"github.com/0xPolygonHermez/zkevm-node/event"
+	"github.com/0xPolygonHermez/zkevm-node/event/nileventstorage"
 	"github.com/0xPolygonHermez/zkevm-node/log"
 	"github.com/0xPolygonHermez/zkevm-node/merkletree"
 	mtDBclientpb "github.com/0xPolygonHermez/zkevm-node/merkletree/pb"
@@ -57,15 +59,20 @@ func setupDBManager() {
 	s := mtDBClientConn.GetState()
 	log.Infof("stateDbClientConn state: %s", s.String())
 
+	eventStorage, err := nileventstorage.NewNilEventStorage()
+	if err != nil {
+		panic(err)
+	}
+	eventLog := event.NewEventLog(event.Config{}, eventStorage)
+
 	stateTree = merkletree.NewStateTree(mtDBServiceClient)
-	testState = state.NewState(stateCfg, state.NewPostgresStorage(stateDb), executorClient, stateTree)
+	testState = state.NewState(stateCfg, state.NewPostgresStorage(stateDb), executorClient, stateTree, eventLog)
 
 	// DBManager
 	closingSignalCh := ClosingSignalCh{
-		ForcedBatchCh:        make(chan state.ForcedBatch),
-		GERCh:                make(chan common.Hash),
-		L2ReorgCh:            make(chan L2ReorgEvent),
-		SendingToL1TimeoutCh: make(chan bool),
+		ForcedBatchCh: make(chan state.ForcedBatch),
+		GERCh:         make(chan common.Hash),
+		L2ReorgCh:     make(chan L2ReorgEvent),
 	}
 
 	txsStore := TxsStore{

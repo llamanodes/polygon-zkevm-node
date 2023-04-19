@@ -9,14 +9,18 @@ import (
 	"time"
 
 	cfgTypes "github.com/0xPolygonHermez/zkevm-node/config/types"
+	"github.com/0xPolygonHermez/zkevm-node/event"
+	"github.com/0xPolygonHermez/zkevm-node/event/nileventstorage"
 	"github.com/0xPolygonHermez/zkevm-node/pool"
 	"github.com/0xPolygonHermez/zkevm-node/state"
+	stateMetrics "github.com/0xPolygonHermez/zkevm-node/state/metrics"
 	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
 	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor/pb"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -43,19 +47,15 @@ var (
 		Wg: new(sync.WaitGroup),
 	}
 	closingSignalCh = ClosingSignalCh{
-		ForcedBatchCh:        make(chan state.ForcedBatch),
-		GERCh:                make(chan common.Hash),
-		L2ReorgCh:            make(chan L2ReorgEvent),
-		SendingToL1TimeoutCh: make(chan bool),
+		ForcedBatchCh: make(chan state.ForcedBatch),
+		GERCh:         make(chan common.Hash),
+		L2ReorgCh:     make(chan L2ReorgEvent),
 	}
 	cfg = FinalizerCfg{
 		GERDeadlineTimeoutInSec: cfgTypes.Duration{
 			Duration: 60,
 		},
 		ForcedBatchDeadlineTimeoutInSec: cfgTypes.Duration{
-			Duration: 60,
-		},
-		SendingToL1DeadlineTimeoutInSec: cfgTypes.Duration{
 			Duration: 60,
 		},
 		SleepDurationInMs: cfgTypes.Duration{
@@ -94,8 +94,12 @@ func testNow() time.Time {
 }
 
 func TestNewFinalizer(t *testing.T) {
+	eventStorage, err := nileventstorage.NewNilEventStorage()
+	require.NoError(t, err)
+	eventLog := event.NewEventLog(event.Config{}, eventStorage)
+
 	// arrange and act
-	f = newFinalizer(cfg, workerMock, dbManagerMock, executorMock, seqAddr, isSynced, closingSignalCh, txsStore, bc)
+	f = newFinalizer(cfg, workerMock, dbManagerMock, executorMock, seqAddr, isSynced, closingSignalCh, txsStore, bc, eventLog)
 
 	// assert
 	assert.NotNil(t, f)
@@ -229,60 +233,6 @@ func TestNewFinalizer(t *testing.T) {
 //	}
 //}
 
-func TestFinalizer_handleTransactionError(t *testing.T) {
-	// arrange
-	f = setupFinalizer(true)
-	nonce := uint64(0)
-	tx := &TxTracker{Hash: oldHash, From: sender, Cost: big.NewInt(0)}
-	testCases := []struct {
-		name               string
-		error              pb.RomError
-		expectedDeleteCall bool
-		expectedMoveCall   bool
-	}{
-		{
-			name:               "OutOfCountersError",
-			error:              pb.RomError(executor.ROM_ERROR_OUT_OF_COUNTERS_STEP),
-			expectedDeleteCall: true,
-		},
-		{
-			name:             "IntrinsicError",
-			error:            pb.RomError(executor.ROM_ERROR_INTRINSIC_INVALID_NONCE),
-			expectedMoveCall: true,
-		},
-	}
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// arrange
-			if tc.expectedDeleteCall {
-				workerMock.On("DeleteTx", oldHash, sender).Return()
-				dbManagerMock.On("UpdateTxStatus", ctx, oldHash, pool.TxStatusFailed, false).Return(nil).Once()
-				dbManagerMock.On("UpdateTxStatus", ctx, oldHash, pool.TxStatusInvalid, false).Return(nil).Once()
-				dbManagerMock.On("DeleteTransactionFromPool", ctx, tx.Hash).Return(nil).Once()
-			}
-			if tc.expectedMoveCall {
-				workerMock.On("MoveTxToNotReady", oldHash, sender, &nonce, big.NewInt(0)).Return([]*TxTracker{}).Once()
-			}
-
-			result := &state.ProcessBatchResponse{
-				ReadWriteAddresses: map[common.Address]*state.InfoReadWrite{
-					sender: {Nonce: &nonce, Balance: big.NewInt(0)},
-				},
-				Responses: []*state.ProcessTransactionResponse{{
-					RomError: executor.RomErr(tc.error),
-				},
-				},
-			}
-
-			// act
-			f.handleTransactionError(ctx, result, tx)
-
-			// assert
-			workerMock.AssertExpectations(t)
-		})
-	}
-}
-
 func TestFinalizer_syncWithState(t *testing.T) {
 	// arrange
 	f = setupFinalizer(true)
@@ -323,7 +273,7 @@ func TestFinalizer_syncWithState(t *testing.T) {
 				coinbase:           f.sequencerAddress,
 				initialStateRoot:   oldHash,
 				stateRoot:          oldHash,
-				timestamp:          uint64(testNow().Unix()),
+				timestamp:          testNow(),
 				globalExitRoot:     oldHash,
 				remainingResources: getMaxRemainingResources(f.batchConstraints),
 			},
@@ -346,7 +296,7 @@ func TestFinalizer_syncWithState(t *testing.T) {
 				coinbase:           f.sequencerAddress,
 				initialStateRoot:   oldHash,
 				stateRoot:          oldHash,
-				timestamp:          uint64(testNow().Unix()),
+				timestamp:          testNow(),
 				globalExitRoot:     oldHash,
 				remainingResources: getMaxRemainingResources(f.batchConstraints),
 			},
@@ -509,8 +459,8 @@ func TestFinalizer_processForcedBatches(t *testing.T) {
 					GlobalExitRoot: forcedBatch.GlobalExitRoot,
 					Transactions:   forcedBatch.RawTxsData,
 					Coinbase:       f.sequencerAddress,
-					Timestamp:      uint64(now().Unix()),
-					Caller:         state.SequencerCallerLabel,
+					Timestamp:      now(),
+					Caller:         stateMetrics.SequencerCallerLabel,
 				}
 				dbManagerMock.On("ProcessForcedBatch", forcedBatch.ForcedBatchNumber, processRequest).Return(&state.ProcessBatchResponse{
 					NewStateRoot:   stateRoot,
@@ -545,7 +495,7 @@ func TestFinalizer_openWIPBatch(t *testing.T) {
 		coinbase:           f.sequencerAddress,
 		initialStateRoot:   oldHash,
 		stateRoot:          oldHash,
-		timestamp:          uint64(now().Unix()),
+		timestamp:          now(),
 		globalExitRoot:     oldHash,
 		remainingResources: getMaxRemainingResources(f.batchConstraints),
 	}
@@ -886,7 +836,6 @@ func TestFinalizer_isDeadlineEncountered(t *testing.T) {
 			// arrange
 			f.nextForcedBatchDeadline = tc.nextForcedBatch
 			f.nextGERDeadline = tc.nextGER
-			f.nextSendingToL1Deadline = tc.nextDelayedBatch
 			if tc.expected == true {
 				now = func() time.Time {
 					return testNow().Add(time.Second * 2)
@@ -1043,22 +992,6 @@ func TestFinalizer_setNextGERDeadline(t *testing.T) {
 	assert.Equal(t, expected, f.nextGERDeadline)
 }
 
-func TestFinalizer_setNextSendingToL1Deadline(t *testing.T) {
-	// arrange
-	f = setupFinalizer(false)
-	now = testNow
-	defer func() {
-		now = time.Now
-	}()
-	expected := now().Unix() + int64(f.cfg.SendingToL1DeadlineTimeoutInSec.Duration.Seconds())
-
-	// act
-	f.setNextSendingToL1Deadline()
-
-	// assert
-	assert.Equal(t, expected, f.nextSendingToL1Deadline)
-}
-
 func TestFinalizer_getConstraintThresholdUint64(t *testing.T) {
 	// arrange
 	f = setupFinalizer(false)
@@ -1113,7 +1046,7 @@ func setupFinalizer(withWipBatch bool) *finalizer {
 			coinbase:           seqAddr,
 			initialStateRoot:   oldHash,
 			stateRoot:          newHash,
-			timestamp:          uint64(now().Unix()),
+			timestamp:          now(),
 			globalExitRoot:     oldHash,
 			remainingResources: getMaxRemainingResources(bc),
 		}
@@ -1132,13 +1065,70 @@ func setupFinalizer(withWipBatch bool) *finalizer {
 		batchConstraints:   bc,
 		processRequest:     state.ProcessRequest{},
 		// closing signals
-		nextGER:                   common.Hash{},
-		nextGERDeadline:           0,
-		nextGERMux:                new(sync.RWMutex),
-		nextForcedBatches:         make([]state.ForcedBatch, 0),
-		nextForcedBatchDeadline:   0,
-		nextForcedBatchesMux:      new(sync.RWMutex),
-		nextSendingToL1Deadline:   0,
-		nextSendingToL1TimeoutMux: new(sync.RWMutex),
+		nextGER:                 common.Hash{},
+		nextGERDeadline:         0,
+		nextGERMux:              new(sync.RWMutex),
+		nextForcedBatches:       make([]state.ForcedBatch, 0),
+		nextForcedBatchDeadline: 0,
+		nextForcedBatchesMux:    new(sync.RWMutex),
+	}
+}
+
+func TestFinalizer_handleTransactionError(t *testing.T) {
+	// arrange
+	f = setupFinalizer(true)
+	nonce := uint64(0)
+	tx := &TxTracker{Hash: oldHash, From: sender, Cost: big.NewInt(0)}
+	testCases := []struct {
+		name               string
+		error              pb.RomError
+		expectedDeleteCall bool
+		updateTxStatus     pool.TxStatus
+		expectedMoveCall   bool
+	}{
+		{
+			name:               "OutOfCountersError",
+			error:              pb.RomError(executor.ROM_ERROR_OUT_OF_COUNTERS_STEP),
+			updateTxStatus:     pool.TxStatusInvalid,
+			expectedDeleteCall: true,
+		},
+		{
+			name:             "IntrinsicError",
+			error:            pb.RomError(executor.ROM_ERROR_INTRINSIC_INVALID_NONCE),
+			updateTxStatus:   pool.TxStatusFailed,
+			expectedMoveCall: true,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// arrange
+			if tc.expectedDeleteCall {
+				workerMock.On("DeleteTx", oldHash, sender).Return()
+				dbManagerMock.On("UpdateTxStatus", ctx, oldHash, tc.updateTxStatus, false, mock.Anything).Return(nil).Once()
+				dbManagerMock.On("DeleteTransactionFromPool", ctx, tx.Hash).Return(nil).Once()
+			}
+			if tc.expectedMoveCall {
+				workerMock.On("MoveTxToNotReady", oldHash, sender, &nonce, big.NewInt(0)).Return([]*TxTracker{}).Once()
+			}
+
+			result := &state.ProcessBatchResponse{
+				ReadWriteAddresses: map[common.Address]*state.InfoReadWrite{
+					sender: {Nonce: &nonce, Balance: big.NewInt(0)},
+				},
+				Responses: []*state.ProcessTransactionResponse{{
+					RomError: executor.RomErr(tc.error),
+				},
+				},
+			}
+
+			// act
+			wg := f.handleTransactionError(ctx, result, tx)
+			if wg != nil {
+				wg.Wait()
+			}
+
+			// assert
+			workerMock.AssertExpectations(t)
+		})
 	}
 }
