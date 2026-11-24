@@ -12,6 +12,10 @@ on:
   repository_dispatch:
     types: [ok-to-test-command]
 
+concurrency:
+  group: pr-ci-test-full-non-e2e.yml-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   trusted-test-full-non-e2e:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
